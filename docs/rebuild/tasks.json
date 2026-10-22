@@ -1055,9 +1055,22 @@
       "verify": ["纯Node真实show处理函数失败对照与状态保留回归", "独立审查与npm run check"],
       "evidence": ["docs/rebuild/evidence/T44.md"],
       "notes": "已修复无效HTML参数在拒绝前覆盖旧场景，补独立审查发现的孤立Unicode代理项；5项host拒绝与1项编码边界新增回归通过，含合法请求恢复。只验证协议状态，窗口运行/视觉另验。"
+    },
+    {
+      "id": "T45",
+      "title": "HTML指引加载有界清理与隐藏状态隔离",
+      "milestone": "M2",
+      "status": "in_progress",
+      "dependsOn": ["T01"],
+      "requirements": ["R07", "R13", "R19"],
+      "acceptance": ["A07", "A12"],
+      "verify": ["纯Node模拟BrowserWindow加载/替换/取消/隐藏和定时器", "独立审查与npm run check", "获准实机后验证HTML加载故障、隐藏、焦点和恢复"],
+      "evidence": ["docs/rebuild/evidence/T45.md"],
+      "notes": "已补10秒加载期限、clear/替换取消与窗口身份隔离，隐藏意图在加载前后保持，资源监控覆盖加载期；13项模拟与独立审查通过，Windows实际显示/焦点/资源验收pending。"
     }
   ],
   "nextUp": [
+    {"taskId":"T45","reason":"无效参数已隔离，但合法HTML加载异常仍可能遗留窗口/等待，影响连续使用与恢复。","action":"实现与13项纯Node回归已完成；获准实机后验证HTML加载挂起/崩溃、隐藏保持、资源超限和失败后重试，确认焦点与穿透。"},
     {"taskId":"T43","reason":"T42相邻审查确认zoom仍可串会话及留下部分文件，应完成同类结果归属边界。","action":"代码与纯Node回归已完成；获准实机后检查实际图片裁剪、结束/断连、锁文件故障恢复及源图保留。"},
     {"taskId":"T42","reason":"只读审查发现旧截图请求重试可能重新绑定新会话，优先于HTML生命周期调查；本轮禁止实机。","action":"实现与15项纯Node回归已完成；获准实机后验证结束/切屏/断连期间截图作废及正常恢复，不将VM结果作为Windows采集证明。"},
     {"taskId":"T41","reason":"用户提供已复现P2；短轮询会截断正常窗口操作，应优先处理。","action":"修复已提交并完成单元/静态验证；获准实机后检查慢helper下窗口策略、前台/按键轮询与恢复提示，不用单测结果替代焦点观察。"},

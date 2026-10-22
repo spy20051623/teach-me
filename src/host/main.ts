@@ -1087,6 +1087,7 @@ async function startServer() {
             }
             guides = nextGuides;
             htmlHost.clear();
+            htmlHost.visible(!guidesHidden);
             if (html[0]) await htmlHost.show(html[0], target());
             active.say(scene.say);
             expand('reply');
