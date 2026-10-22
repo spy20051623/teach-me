@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -95,7 +95,22 @@ test('custom recognizer sends bytes to the configured local HTTP API and reads t
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ text: '测试识别' }));
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  // Windows can allocate an ephemeral port that fetch refuses as an unsafe service port.
+  // Use the private high range, retrying only address collisions, not request failures.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(randomInt(49152, 65536), '127.0.0.1', () => {
+          server.removeListener('error', reject);
+          resolve();
+        });
+      });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || attempt === 9) throw error;
+    }
+  }
   try {
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
