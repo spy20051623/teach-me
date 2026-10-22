@@ -3,12 +3,21 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Shot } from '../shared/protocol.ts';
 import { IMAGE_EDGE } from '../shared/limits.ts';
+// The HTTP operation owns these new files until it publishes the result.
+export function zoomFiles(source: Shot, id: string) {
+  return [
+    path.join(path.dirname(source.path), `${id}-zoom.png`),
+    path.join(path.dirname(source.path), `${id}-original.png`),
+  ] as const;
+}
 export async function zoomShot(
   source: Shot,
   original: string | undefined,
   rect: [number, number, number, number],
   id: string,
+  assertCurrent: () => void,
 ) {
+  assertCurrent();
   const [x, y, w, h] = rect;
   if (x + w > source.width || y + h > source.height) throw new Error('裁切范围超出截图');
   const raw = nativeImage.createFromPath(original || source.path);
@@ -30,10 +39,11 @@ export async function zoomShot(
           height: Math.max(1, Math.round(cropped.height * ratio)),
         })
       : crop;
-  const file = path.join(path.dirname(source.path), `${id}-zoom.png`);
+  const [file, rawFile] = zoomFiles(source, id);
   await fs.writeFile(file, image.toPNG());
-  const rawFile = path.join(path.dirname(source.path), `${id}-original.png`);
+  assertCurrent();
   await fs.writeFile(rawFile, crop.toPNG());
+  assertCurrent();
   const base = source.crop || {
     x: 0,
     y: 0,

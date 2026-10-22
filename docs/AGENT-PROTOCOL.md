@@ -28,7 +28,7 @@ wait 先把结果写到 stdout 并等待写入回调，再确认消息；未确�
 | say 文字 | 面板显示 Agent 的短句 |
 | show JSON或文件 | 必须含非空 say；一次替换整个 Agent 场景 |
 | capture | Agent主动请求当前画面，遵守审批；返回shot.path须打开，内部最多三次尝试；审批/采集期间教学或屏幕变更即作废，重试不会转向新会话 |
-| zoom --shot s1 --rect x,y,w,h | 从同一帧的原始像素裁切，不重新截图 |
+| zoom --shot s1 --rect x,y,w,h | 从同一帧的原始像素裁切，不重新截图；请求期间会话失效则拒绝结果，源帧保留 |
 | clear | 仅清 Agent 指引；--all 也清用户笔迹，需要用户授权 |
 | board | 报告用户和 Agent 笔迹数量 |
 | stop | 结束并关闭应用 |

@@ -1031,9 +1031,22 @@
       "verify": ["纯Node模拟截图审批/重试/排队/写入中的会话与屏幕变更", "独立审查与npm run check", "获准实机后检查实际截图及切屏结束恢复"],
       "evidence": ["docs/rebuild/evidence/T42.md"],
       "notes": "已复现并修复旧capture跨会话重试及落盘后串图；15项完整host纯Node模拟通过，原版13项失败，独立审查无阻断。Windows实际截图/切屏与锁文件仍pending。"
+    },
+    {
+      "id": "T43",
+      "title": "裁剪截图的会话隔离与失败文件清理",
+      "milestone": "M2",
+      "status": "in_progress",
+      "dependsOn": ["T01"],
+      "requirements": ["R05", "R11", "R13"],
+      "acceptance": ["A06", "A11", "A12"],
+      "verify": ["纯Node完整host中zoom跨会话/断连/部分写入失败回归", "独立审查与npm run check", "获准实机后检查历史帧裁剪与结束恢复"],
+      "evidence": ["docs/rebuild/evidence/T43.md"],
+      "notes": "已修复zoom跨会话/断连后登记及部分文件遗留；8项新增回归旧版7失败、新版全通过，连同capture共23项通过；历史帧裁剪保留。Windows实际解码/文件锁与恢复pending。"
     }
   ],
   "nextUp": [
+    {"taskId":"T43","reason":"T42相邻审查确认zoom仍可串会话及留下部分文件，应完成同类结果归属边界。","action":"代码与纯Node回归已完成；获准实机后检查实际图片裁剪、结束/断连、锁文件故障恢复及源图保留。"},
     {"taskId":"T42","reason":"只读审查发现旧截图请求重试可能重新绑定新会话，优先于HTML生命周期调查；本轮禁止实机。","action":"实现与15项纯Node回归已完成；获准实机后验证结束/切屏/断连期间截图作废及正常恢复，不将VM结果作为Windows采集证明。"},
     {"taskId":"T41","reason":"用户提供已复现P2；短轮询会截断正常窗口操作，应优先处理。","action":"修复已提交并完成单元/静态验证；获准实机后检查慢helper下窗口策略、前台/按键轮询与恢复提示，不用单测结果替代焦点观察。"},
     {"taskId":"T40","reason":"取消传播实现与单元检查已完成，实际本地进程和自定义API取消尚未验收。","action":"本轮禁止实机，不再重复单元替代验收；获准后验证取消立即重试、进程关闭后清文件及kill失败/锁文件的恢复，确认custom客户端取消边界。"},

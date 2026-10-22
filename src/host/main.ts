@@ -23,7 +23,7 @@ import { InputController } from '../core/input.ts';
 import { mapGuides, parseScene } from '../core/scene.ts';
 import { WindowsAdapter } from './windows.ts';
 import { HtmlHost } from './html.ts';
-import { zoomShot } from './zoom.ts';
+import { zoomFiles, zoomShot } from './zoom.ts';
 import { VoiceController } from '../core/voice.ts';
 import { SystemSpeech, transcribe } from './speech.ts';
 import { pruneSessions } from './storage.ts';
@@ -341,12 +341,9 @@ function applyCaptureVisibility() {
 let captureProtected = false;
 let captureTail: Promise<unknown> = Promise.resolve();
 let captureDisplayEpoch = 0;
-function captureScope(active = requireSession(), connected = () => {}) {
-  const current = target();
-  const display = { ...current, bounds: { ...current.bounds }, size: { ...current.size } };
-  const epoch = captureDisplayEpoch;
+function imageSessionScope(active: Session, connected = () => {}) {
   const recovery = panelRecoveryAt;
-  const assertCurrent = () => {
+  return () => {
     connected();
     if (
       quitting ||
@@ -356,6 +353,15 @@ function captureScope(active = requireSession(), connected = () => {}) {
       active.phase === 'ended'
     )
       throw new Error('教学已变更，截图已作废');
+  };
+}
+function captureScope(active = requireSession(), connected = () => {}) {
+  const current = target();
+  const display = { ...current, bounds: { ...current.bounds }, size: { ...current.size } };
+  const epoch = captureDisplayEpoch;
+  const assertSession = imageSessionScope(active, connected);
+  const assertCurrent = () => {
+    assertSession();
     const now = target();
     if (
       epoch !== captureDisplayEpoch ||
@@ -1107,6 +1113,8 @@ async function startServer() {
             break;
           }
           case '/zoom': {
+            const assertCurrent = imageSessionScope(active, requireConnected);
+            assertCurrent();
             const source = shots.get(z.string().optional().parse(data.shot) || lastShot?.id || '');
             if (!source) throw new Error('截图不存在');
             const rect = z
@@ -1117,16 +1125,30 @@ async function startServer() {
                 z.number().int().positive(),
               ])
               .parse(data.rect);
-            const resultShot = await zoomShot(
-              source,
-              originals.get(source.id),
-              rect,
-              `s${++shotSequence}`,
-            );
-            shots.set(resultShot.shot.id, resultShot.shot);
-            originals.set(resultShot.shot.id, resultShot.original);
-            lastShot = resultShot.shot;
-            result = { shot: lastShot };
+            const id = `s${++shotSequence}`;
+            try {
+              const resultShot = await zoomShot(
+                source,
+                originals.get(source.id),
+                rect,
+                id,
+                assertCurrent,
+              );
+              assertCurrent();
+              shots.set(resultShot.shot.id, resultShot.shot);
+              originals.set(resultShot.shot.id, resultShot.original);
+              lastShot = resultShot.shot;
+              result = { shot: lastShot };
+            } catch (e) {
+              for (const file of zoomFiles(source, id)) {
+                try {
+                  await fs.rm(file, { force: true });
+                } catch (cleanupError) {
+                  runtimeEvent('zoom-cleanup-failed', failureMetadata(cleanupError));
+                }
+              }
+              throw e;
+            }
             break;
           }
           case '/board':

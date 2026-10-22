@@ -85,11 +85,14 @@ async function setup(t, options = {}) {
     bounds: { x: (id - 1) * 1000, y: 0, width: 1000, height: 800 },
     workArea: { x: (id - 1) * 1000, y: 0, width: 1000, height: 800 },
   }));
-  const pixels = {
+  const syntheticImage = (width, height) => ({
     isEmpty: () => false,
-    getSize: () => ({ width: 1000, height: 800 }),
-    toPNG: () => Buffer.from('synthetic pixels'),
-  };
+    getSize: () => ({ width, height }),
+    toPNG: () => Buffer.from(JSON.stringify({ width, height })),
+    crop: (rect) => syntheticImage(rect.width, rect.height),
+    resize: (size) => syntheticImage(size.width, size.height),
+  });
+  const pixels = syntheticImage(1000, 800);
   const fakeApp = Object.assign(new EventEmitter(), {
     setName() {},
     setPath() {},
@@ -114,6 +117,13 @@ async function setup(t, options = {}) {
   };
   const electron = {
     app: fakeApp,
+    nativeImage: {
+      createFromPath(file) {
+        assert.ok(files.has(file), 'zoom reads an existing synthetic source image');
+        const size = JSON.parse(String(files.get(file)));
+        return syntheticImage(size.width, size.height);
+      },
+    },
     BrowserWindow: class {
       constructor() {
         throw new Error('native window creation forbidden');
@@ -137,8 +147,10 @@ async function setup(t, options = {}) {
       files.set(file, data);
       if (file.endsWith('endpoint.json')) endpoint = JSON.parse(data);
       else {
-        await hold(file.endsWith('-original.png') ? 'original' : 'thumbnail');
-        if (options.writeError) throw options.writeError;
+        const phase = file.endsWith('-original.png') ? 'original' : 'thumbnail';
+        await hold(phase);
+        if (options.writeError && (!options.writeErrorPhase || options.writeErrorPhase === phase))
+          throw options.writeError;
       }
     },
     rm: async (file) => {
@@ -422,4 +434,115 @@ test('partial write cleanup failure keeps the write error and reports only safe 
     1,
     'a failed deletion is not represented as successful cleanup',
   );
+});
+
+async function captureZoomSource(h) {
+  const result = await h.request('capture').result;
+  assert.equal(result.status, 200);
+  return { shot: result.body.shot, files: h.pngFiles().sort() };
+}
+
+function sourceFilesPreserved(h, source) {
+  assert.deepEqual(h.pngFiles().sort(), source.files, 'only this failed zoom output is removed');
+  assert.ok(
+    h.removals.every((file) => !source.files.includes(file)),
+    'source pixels remain intact',
+  );
+}
+
+for (const phase of ['thumbnail', 'original']) {
+  test(`zoom session replacement during ${phase} cannot populate the new session`, async (t) => {
+    const options = {};
+    const h = await setup(t, options);
+    const source = await captureZoomSource(h);
+    options.hold = phase;
+    const pending = h.request('zoom', { shot: source.shot.id, rect: [100, 80, 400, 300] });
+    await until(h.entered);
+    await h.replace();
+    h.release();
+    const result = await pending.result;
+    assert.notEqual(result.status, 200, 'old request cannot publish after its session changes');
+    assert.equal(result.body.shot, undefined);
+    assert.equal(h.api.state().shots.length, 0);
+    assert.equal(h.api.state().originals.length, 0);
+    assert.equal(h.api.state().lastShot, null);
+    sourceFilesPreserved(h, source);
+  });
+
+  test(`zoom disconnect during ${phase} cannot register a result or leave output`, async (t) => {
+    const options = {};
+    const h = await setup(t, options);
+    const source = await captureZoomSource(h);
+    options.hold = phase;
+    const pending = h.request('zoom', { shot: source.shot.id, rect: [100, 80, 400, 300] });
+    await until(h.entered);
+    pending.disconnect();
+    h.release();
+    await completed(pending.done);
+    assert.equal(h.api.state().shots.length, 1);
+    assert.equal(h.api.state().originals.length, 1);
+    assert.equal(h.api.state().lastShot.id, source.shot.id);
+    sourceFilesPreserved(h, source);
+  });
+
+  test(`zoom partial ${phase} write failure removes only its outputs`, async (t) => {
+    const options = {};
+    const h = await setup(t, options);
+    const source = await captureZoomSource(h);
+    options.writeError = new Error('fixture zoom disk full');
+    options.writeErrorPhase = phase;
+    const result = await h.request('zoom', { shot: source.shot.id, rect: [100, 80, 400, 300] })
+      .result;
+    assert.equal(result.status, 400);
+    assert.match(result.body.error, /^(Error: )?fixture zoom disk full$/);
+    assert.equal(h.api.state().shots.length, 1);
+    assert.equal(h.api.state().lastShot.id, source.shot.id);
+    sourceFilesPreserved(h, source);
+  });
+}
+
+test('zoom preserves nested crop geometry and permits historical frames without stale show', async (t) => {
+  const h = await setup(t);
+  const source = await captureZoomSource(h);
+  const first = await h.request('zoom', { shot: source.shot.id, rect: [100, 80, 400, 300] }).result;
+  assert.equal(first.status, 200);
+  assert.deepEqual([first.body.shot.width, first.body.shot.height], [400, 300]);
+  assert.deepEqual(first.body.shot.crop, { x: 100, y: 80, width: 400, height: 300 });
+  await h.api.action({ type: 'select-display', id: 2 });
+  const nested = await h.request('zoom', { shot: first.body.shot.id, rect: [50, 30, 100, 120] })
+    .result;
+  assert.equal(nested.status, 200, 'zoom transforms an existing frame, not the current screen');
+  assert.equal(nested.body.shot.displayId, 1);
+  assert.deepEqual([nested.body.shot.width, nested.body.shot.height], [100, 120]);
+  assert.deepEqual(nested.body.shot.crop, { x: 150, y: 110, width: 100, height: 120 });
+  assert.equal(h.acquisitions(), 1, 'zoom never captures another frame');
+  assert.equal(h.pngFiles().length, 6);
+  const show = await h.request('show', { shot: nested.body.shot.id, say: 'fixture', items: [] })
+    .result;
+  assert.equal(show.status, 400);
+  assert.match(show.body.error, /屏幕布局已改变/);
+});
+
+test('zoom cleanup failure preserves the original write error and source files', async (t) => {
+  const options = {};
+  const h = await setup(t, options);
+  const source = await captureZoomSource(h);
+  options.writeError = Object.assign(new Error('private zoom write failure'), { code: 'ENOSPC' });
+  options.cleanupError = Object.assign(new Error('private zoom cleanup failure'), {
+    code: 'EPERM',
+  });
+  const result = await h.request('zoom', { shot: source.shot.id, rect: [100, 80, 400, 300] })
+    .result;
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /^(Error: )?private zoom write failure$/);
+  assert.equal(h.api.state().shots.length, 1);
+  assert.equal(h.api.state().lastShot.id, source.shot.id);
+  assert.equal(h.removals.length, 2, 'both possible zoom outputs get a cleanup attempt');
+  assert.equal(new Set(h.removals).size, 2);
+  assert.ok(h.removals.every((file) => !source.files.includes(file)));
+  assert.ok(source.files.every((file) => h.files.has(file)));
+  const failures = h.events.filter((event) => event.code === 'EPERM');
+  assert.equal(failures.length, 2);
+  assert.doesNotMatch(JSON.stringify(failures), /private zoom/);
+  assert.equal(h.pngFiles().length, 3, 'failed deletion is not reported as successful cleanup');
 });
