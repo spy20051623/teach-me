@@ -32,7 +32,15 @@ public static bool Activate(System.IntPtr h) {
   finally { if(attached)AttachThreadInput(current,foreground,false); }
 }
 `;
-type Failure = 'timeout' | 'exit' | 'spawn' | 'write' | 'protocol' | 'disposed' | 'native-rejected';
+type Failure =
+  | 'timeout'
+  | 'exit'
+  | 'spawn'
+  | 'write'
+  | 'protocol'
+  | 'disposed'
+  | 'native-rejected'
+  | 'recovering';
 type Reply = { value: string | null; failure?: Failure };
 type Reporter = (event: string, detail: Record<string, string | number | boolean>) => void;
 type Helper = {
@@ -40,6 +48,7 @@ type Helper = {
   generation: number;
   ready: boolean;
   closed: boolean;
+  draining: boolean;
   buffer: string;
   stderrBytes: number;
   pending: Map<number, (value: string | null, failure?: Failure) => void>;
@@ -52,8 +61,10 @@ const codes: Record<Failure, string> = {
   protocol: 'NATIVE_PROTOCOL_ERROR',
   disposed: 'NATIVE_DISPOSED',
   'native-rejected': 'NATIVE_POLICY_REJECTED',
+  recovering: 'NATIVE_HELPER_RECOVERING',
 };
 function nativeError(message: string, failure: Failure) {
+  if (failure === 'recovering') message = 'Windows辅助进程正在恢复，请稍后重试';
   return Object.assign(new Error(message), { code: codes[failure] });
 }
 export class WindowsAdapter {
@@ -103,6 +114,7 @@ export class WindowsAdapter {
       generation: ++this.generation,
       ready: false,
       closed: false,
+      draining: false,
       buffer: '',
       stderrBytes: 0,
       pending: new Map(),
@@ -158,13 +170,30 @@ export class WindowsAdapter {
       });
       return Promise.resolve({ value: null, failure: 'spawn' });
     }
+    if (helper.draining) {
+      this.report('native-request-failed', {
+        kind,
+        reason: 'recovering',
+        generation: helper.generation,
+        elapsedMs: 0,
+        ready: helper.ready,
+      });
+      return Promise.resolve({ value: null, failure: 'recovering' });
+    }
     const id = ++this.sequence;
     const started = Date.now();
     return new Promise((resolve) => {
       const timer = setTimeout(
         () => {
-          // A late operation may already have executed. Retire the helper; never replay it.
-          this.close(helper, 'timeout', true);
+          if (['fg', 'down', 'style'].includes(kind)) {
+            // A read timeout must not shorten an outstanding window write's deadline.
+            // Reject new work so polling cannot keep a stalled helper alive indefinitely.
+            helper.draining = true;
+            helper.pending.get(id)?.(null, 'timeout');
+          } else {
+            // A timed-out write may already have executed. Retire it; never replay it.
+            this.close(helper, 'timeout', true);
+          }
         },
         kind === 'input' || kind === 'style' ? 10000 : 3000,
       );
@@ -187,6 +216,7 @@ export class WindowsAdapter {
             ready: helper.ready,
           });
         resolve({ value: failure ? null : value, failure });
+        if (helper.draining && helper.pending.size === 0) this.close(helper, 'timeout', true);
       });
       try {
         helper.child.stdin!.write(

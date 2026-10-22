@@ -226,3 +226,122 @@ test('diagnostic callback failures do not alter a request or disposal', async (t
   assert.doesNotThrow(() => adapter.dispose());
   assert.equal(await foreground, null);
 });
+
+for (const ready of [false, true]) {
+  test(`short query timeout preserves a ten-second window operation (ready=${ready})`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+    const { adapter, children, reports } = setup(t);
+    let operationSettled = false;
+    const operation = adapter.inputPolicy('123', true, false).then(
+      () => {
+        operationSettled = true;
+        return 'success';
+      },
+      (error: Error & { code: string }) => {
+        operationSettled = true;
+        return error.code;
+      },
+    );
+    const child = children[0];
+    const input = child.requests[0];
+    if (ready) child.stdout.emit('data', '@READY\n');
+    const foreground = adapter.foreground();
+    const down = adapter.talkDown();
+    t.mock.timers.tick(3000);
+    assert.equal(await foreground, null);
+    assert.equal(await down, false);
+    assert.equal(operationSettled, false, 'the window operation still has seven seconds');
+    assert.equal(child.kills, 0);
+    t.mock.timers.tick(1000);
+    child.stdout.emit('data', `@${input.id}=True\n`);
+    assert.equal(await operation, 'success');
+    assert.equal(child.kills, 1, 'retire only after the outstanding operation completes');
+    assert.ok(
+      !reports.some((entry) => entry.detail.kind === 'input' && entry.detail.reason === 'timeout'),
+    );
+  });
+}
+
+test('polling during recovery cannot extend deadlines, send new writes or spawn competing helpers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const { adapter, children, reports } = setup(t);
+  const style = assert.rejects(adapter.windowStyle('123'), { code: 'NATIVE_TIMEOUT' });
+  const query = adapter.foreground();
+  const old = children[0];
+  t.mock.timers.tick(3000);
+  assert.equal(await query, null);
+  for (let i = 0; i < 6; i++) {
+    assert.equal(await adapter.foreground(), null);
+    assert.equal(await adapter.talkDown(), false);
+    await assert.rejects(adapter.inputPolicy('123', true, false), {
+      code: 'NATIVE_HELPER_RECOVERING',
+    });
+    t.mock.timers.tick(1000);
+    assert.equal(old.kills, 0);
+  }
+  assert.equal(old.requests.length, 2, 'recovery requests never reach the old pipe');
+  assert.equal(children.length, 1, 'no new helper can race the outstanding old operation');
+  t.mock.timers.tick(1000);
+  await style;
+  assert.equal(old.kills, 1);
+  assert.ok(reports.some((entry) => entry.detail.reason === 'recovering'));
+  const next = adapter.windowStyle('123');
+  assert.equal(children.length, 2);
+  old.reply('999');
+  old.emit('exit', 1);
+  children[1].reply('524288');
+  assert.equal(await next, 524288);
+});
+
+test('a style read timeout does not shorten a later window write deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const { adapter, children } = setup(t);
+  const style = assert.rejects(adapter.windowStyle('123'), { code: 'NATIVE_TIMEOUT' });
+  t.mock.timers.tick(1000);
+  const input = adapter.inputPolicy('123', true, false);
+  t.mock.timers.tick(9000);
+  await style;
+  assert.equal(children[0].kills, 0);
+  t.mock.timers.tick(500);
+  children[0].reply('True');
+  await input;
+  assert.equal(children[0].kills, 1);
+});
+
+test('a timed-out activation still retires the helper instead of allowing a late window write', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const { adapter, children } = setup(t);
+  const input = assert.rejects(adapter.inputPolicy('123', true, false), { code: 'NATIVE_TIMEOUT' });
+  const activation = adapter.activate('123');
+  t.mock.timers.tick(3000);
+  assert.equal(await activation, false);
+  await input;
+  assert.equal(children[0].kills, 1);
+  const next = adapter.foreground();
+  assert.equal(children.length, 2);
+  assert.deepEqual(
+    children[1].requests.map((request) => request.kind),
+    ['fg'],
+  );
+  children[1].reply('5678');
+  assert.equal(await next, '5678');
+});
+
+test('dispose interrupts draining immediately and old deadlines cannot kill the replacement', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const { adapter, children } = setup(t);
+  const input = assert.rejects(adapter.inputPolicy('123', true, false), {
+    code: 'NATIVE_DISPOSED',
+  });
+  const query = adapter.foreground();
+  t.mock.timers.tick(3000);
+  await query;
+  adapter.dispose();
+  await input;
+  assert.equal(children[0].kills, 1);
+  const next = adapter.foreground();
+  children[1].reply('5678');
+  assert.equal(await next, '5678');
+  t.mock.timers.tick(10000);
+  assert.equal(children[1].kills, 0);
+});

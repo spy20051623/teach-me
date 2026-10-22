@@ -218,3 +218,9 @@ WindowsAdapter使每个helper拥有自己的pending、stdout缓冲与closed标�
 真实CLI在start审批中退出后，旧审批仍可创建会话，却没有客户端收到凭据，重试被活跃会话阻挡。将待连接审批与选屏绑定原HTTP请求：响应连接在提交前关闭就撤销自身请求；在异步原生取消后再次检查，避免批准到提交之间的断连仍创建会话。attach取消保留原Session和消息。旧选屏动作经过等待后核对请求身份，不能作用于替代请求。
 
 沿用现有审批、Session与CLI凭据保存边界，不增加持久化事务或自动重连层。创建Session与返回结果之间没有异步等待；提交后的响应丢失不能保证客户端已接收，但不因此回滚活跃教学，调用方通过status/attach恢复。范围与真实CLI证据见[T36](evidence/T36.md)，多屏请求模拟不代表真实多屏几何验收。
+
+## ADR-031 · 接受 · 2026-10-22 · 只读helper超时不缩短窗口写操作期限
+
+补充ADR-028：用户检视及FakeChild对照确认，3秒fg/down超时会通过close整代helper提前结束10秒input/style。fg/down/style只读查询超时现在只结算自身并进入draining；已登记请求保留原期限，draining不向旧代写入新命令，也不启动替代helper并发修改窗口。新请求返回NATIVE_HELPER_RECOVERING（查询返回null/false，窗口方法提示稍后重试），剩余pending结束即淘汰；持续轮询不能延长期限。
+
+activate/input自身超时仍立即淘汰整代，避免已向调用方报告失败的写操作继续排队并迟到抢焦点/改样式；不重放可能已执行的操作。不能仅把所有期限加长、无限保留卡死helper或为未退出的旧写操作立即启动并行helper。kill调用不是已确认原生进程退出，实际Windows慢启动与窗口操作仍待验收，见[T41](evidence/T41.md)。

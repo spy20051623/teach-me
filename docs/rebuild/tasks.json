@@ -876,7 +876,7 @@
       "id": "T35",
       "title": "固定Windows检出换行符并恢复PR门禁",
       "milestone": "M1",
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "T01"
       ],
@@ -894,7 +894,7 @@
       "evidence": [
         "docs/rebuild/evidence/T35.md"
       ],
-      "notes": "PR #2的95文件Prettier失败已以真实Git CRLF检出复现并修复；历史独立检出check 84项和smoke 24项通过。2026-10-21恢复确认晚间三笔提交已推送至cf13b51，原PR在7de0b56的新运行39564552860仍action_required；后续推送须核对最新run并待主仓批准，远端验收pending。本轮禁止实机测试。"
+      "notes": "CRLF检出失败修复已在原PR验证；2026-10-22核对bb2bae8的运行39567340052及check job：npm ci/check/smoke、连接取消与选屏竞态全部success，PR #2已合并至主仓58b6d3d。此远端结果属于bb2bae8，不覆盖之后的T41修复。"
     },
     {
       "id": "T36",
@@ -995,9 +995,34 @@
       ],
       "evidence": ["docs/rebuild/evidence/T40.md"],
       "notes": "每次转写已传递AbortSignal，取消中止本轮child/fetch/body；预取消和写入中取消不启动识别，close/5秒有界清理且首次失败保留。113项check和独立审查通过；Windows实际命令、文件占用与真实API取消仍pending。"
+    },
+    {
+      "id": "T41",
+      "title": "隔离helper短查询超时与窗口操作期限",
+      "milestone": "M2",
+      "status": "in_progress",
+      "dependsOn": [
+        "T33"
+      ],
+      "requirements": [
+        "R19"
+      ],
+      "acceptance": [
+        "A37"
+      ],
+      "verify": [
+        "纯Node混合3秒/10秒请求与卡死淘汰回归",
+        "独立审查与npm run check",
+        "后续允许实机时验证慢helper下窗口操作与轮询"
+      ],
+      "evidence": [
+        "docs/rebuild/evidence/T41.md"
+      ],
+      "notes": "已复现并修复只读查询超时截断窗口操作；draining拒绝新请求并保留已登记期限，窗口写自身超时仍立即淘汰。18项helper和119项check、独立审查通过；Windows慢helper下窗口与焦点实机pending。"
     }
   ],
   "nextUp": [
+    {"taskId":"T41","reason":"用户提供已复现P2；短轮询会截断正常窗口操作，应优先处理。","action":"修复已提交并完成单元/静态验证；获准实机后检查慢helper下窗口策略、前台/按键轮询与恢复提示，不用单测结果替代焦点观察。"},
     {"taskId":"T40","reason":"取消传播实现与单元检查已完成，实际本地进程和自定义API取消尚未验收。","action":"本轮禁止实机，不再重复单元替代验收；获准后验证取消立即重试、进程关闭后清文件及kill失败/锁文件的恢复，确认custom客户端取消边界。"},
     {
       "taskId": "T38",
