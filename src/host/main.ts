@@ -523,47 +523,65 @@ const input = new InputController({
   deliver: async (text, frames, id, attach) => {
     const s = requireSession();
     const epoch = userBoard.epoch;
-    let all = frames;
-    if (attach && (userBoard.count || guides.some((g) => g.type === 'stroke'))) {
-      const dataUrl = await overlay.webContents.executeJavaScript(
-        `window.companionBoard?.export(${epoch})`,
-      );
-      if (userBoard.epoch !== epoch || session !== s || s.phase === 'ended')
-        throw new Error('画板或教学已变更，请重新发送');
+    const assertCurrent = () => {
       if (
-        typeof dataUrl !== 'string' ||
-        !dataUrl.startsWith('data:image/png;base64,') ||
-        dataUrl.length > 32 * 1024 * 1024
+        input.state.turnId !== id ||
+        input.state.phase !== 'submitting' ||
+        session !== s ||
+        s.phase === 'ended'
       )
-        throw new Error('画板导出失败');
-      const png = nativeImage.createFromDataURL(dataUrl);
-      if (png.isEmpty()) throw new Error('画板导出失败');
-      const d = target();
-      const shotId = `s${++shotSequence}`;
-      const file = path.join(home, 'sessions', s.id, 'shots', `${shotId}-board.png`);
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await fs.writeFile(file, png.toPNG());
-      all = [
-        ...all,
-        {
-          id: shotId,
-          path: file,
-          ...png.getSize(),
-          displayId: d.id,
-          bounds: { ...d.bounds },
-          scaleFactor: d.scaleFactor,
-          at: Date.now(),
-        },
-      ];
+        throw new Error('输入已取消，附件已作废');
+      if (attach && userBoard.epoch !== epoch) throw new Error('画板已变更，请重新发送');
+    };
+    let all = frames;
+    let boardFile: string | null = null;
+    try {
+      assertCurrent();
+      if (attach && (userBoard.count || guides.some((g) => g.type === 'stroke'))) {
+        const dataUrl = await overlay.webContents.executeJavaScript(
+          `window.companionBoard?.export(${epoch})`,
+        );
+        assertCurrent();
+        if (
+          typeof dataUrl !== 'string' ||
+          !dataUrl.startsWith('data:image/png;base64,') ||
+          dataUrl.length > 32 * 1024 * 1024
+        )
+          throw new Error('画板导出失败');
+        const png = nativeImage.createFromDataURL(dataUrl);
+        if (png.isEmpty()) throw new Error('画板导出失败');
+        const d = target();
+        const shotId = `s${++shotSequence}`;
+        boardFile = path.join(home, 'sessions', s.id, 'shots', `${shotId}-board.png`);
+        await fs.mkdir(path.dirname(boardFile), { recursive: true });
+        assertCurrent();
+        await fs.writeFile(boardFile, png.toPNG());
+        assertCurrent();
+        all = [
+          ...all,
+          {
+            id: shotId,
+            path: boardFile,
+            ...png.getSize(),
+            displayId: d.id,
+            bounds: { ...d.bounds },
+            scaleFactor: d.scaleFactor,
+            at: Date.now(),
+          },
+        ];
+      }
+      assertCurrent();
+    } catch (e) {
+      if (boardFile) {
+        try {
+          await fs.rm(boardFile, { force: true });
+        } catch (cleanupError) {
+          runtimeEvent('board-attachment-cleanup-failed', failureMetadata(cleanupError));
+        }
+      }
+      throw e;
     }
-    if (
-      input.state.turnId !== id ||
-      input.state.phase !== 'submitting' ||
-      session !== s ||
-      s.phase === 'ended'
-    )
-      throw new Error('输入已取消，附件已作废');
-    if (attach && userBoard.epoch !== epoch) throw new Error('画板已变更，请重新发送');
+    // Once queued, the message owns the attachment even if a later notification fails.
     s.push(text, all, id);
     if (frames[0]) lastShot = frames[0];
   },

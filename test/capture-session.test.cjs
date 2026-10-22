@@ -29,6 +29,7 @@ export const captureTest = {
     observeDisplays();
   },
   endSession() { session?.end(); },
+  prepareInput() { return input.prepare(false); },
   captureTier(value: Settings['captureTier']) { settings = { ...settings, captureTier: value }; },
   voiceEngine(value: Settings['voice']['engine']) { settings = { ...settings, voice: { ...settings.voice, engine: value } }; },
   state() { return { session, shots: [...shots.values()], originals: [...originals.values()], lastShot, captureState, connection, captureProtected, guides, htmlClears: captureTestHtmlClears }; }
@@ -71,12 +72,15 @@ async function setup(t, options = {}) {
   const files = new Map();
   const events = [];
   const removals = [];
+  const writes = [];
+  const directories = [];
   const timers = new Set();
   let handler;
   let endpoint;
   let acquisitions = 0;
   let windowCreations = 0;
   let entered = false;
+  let boardExports = 0;
   const gate = deferred();
   const hold = async (phase) => {
     if (options.hold === phase && !entered) {
@@ -120,7 +124,15 @@ async function setup(t, options = {}) {
     isDestroyed: () => false,
     isFocused: () => false,
     getNativeWindowHandle: () => Buffer.alloc(8),
-    webContents: { getZoomFactor: () => 1 },
+    webContents: {
+      getZoomFactor: () => 1,
+      async executeJavaScript(script) {
+        assert.match(script, /^window\.companionBoard\?\.export\(\d+\)$/);
+        boardExports++;
+        await hold('board-export');
+        return 'data:image/png;base64,c3ludGhldGlj';
+      },
+    },
   };
   const screen = Object.assign(new EventEmitter(), {
     getAllDisplays: () => displays,
@@ -129,6 +141,7 @@ async function setup(t, options = {}) {
   const electron = {
     app: fakeApp,
     nativeImage: {
+      createFromDataURL: () => pixels,
       createFromPath(file) {
         assert.ok(files.has(file), 'zoom reads an existing synthetic source image');
         const size = JSON.parse(String(files.get(file)));
@@ -154,12 +167,21 @@ async function setup(t, options = {}) {
     },
   };
   const filePort = {
-    mkdir: async () => hold('mkdir'),
+    mkdir: async (directory) => {
+      directories.push(directory);
+      if (boardExports) await hold('board-mkdir');
+      await hold('mkdir');
+    },
     writeFile: async (file, data) => {
+      writes.push(file);
       files.set(file, data);
       if (file.endsWith('endpoint.json')) endpoint = JSON.parse(data);
       else {
-        const phase = file.endsWith('-original.png') ? 'original' : 'thumbnail';
+        const phase = file.endsWith('-board.png')
+          ? 'board'
+          : file.endsWith('-original.png')
+            ? 'original'
+            : 'thumbnail';
         await hold(phase);
         if (options.writeError && (!options.writeErrorPhase || options.writeErrorPhase === phase))
           throw options.writeError;
@@ -293,6 +315,8 @@ async function setup(t, options = {}) {
     files,
     events,
     removals,
+    writes,
+    directories,
     entered: () => entered,
     release: gate.resolve,
     acquisitions: () => acquisitions,
@@ -308,6 +332,117 @@ function noPublishedShots(h) {
   assert.equal(state.captureProtected, false, 'capture visibility protection is released');
   assert.equal(h.pngFiles().length, 0, 'invalidated temporary screenshot files are removed');
 }
+
+async function prepareBoardInput(h) {
+  const turnId = await h.api.prepareInput();
+  await h.api.action({ type: 'board-change', epoch: h.api.snapshot().userBoard.epoch, count: 1 });
+  return turnId;
+}
+const boardFiles = (h) => h.pngFiles().filter((file) => file.endsWith('-board.png'));
+const submitBoard = (h, turnId) =>
+  h.api.action({ type: 'submit', turnId, text: 'board attachment fixture', attachBoard: true });
+
+test('board attachment canceled during export never creates files and the next submission succeeds', async (t) => {
+  const h = await setup(t, { hold: 'board-export' });
+  const turnId = await prepareBoardInput(h);
+  const originals = h.pngFiles();
+  const directoryCount = h.directories.length;
+  const failed = assert.rejects(submitBoard(h, turnId), /取消|作废/);
+  await until(h.entered, 'board export');
+  await h.api.action({ type: 'cancel' });
+  h.release();
+  await completed(failed);
+  assert.equal(h.directories.length, directoryCount, 'canceled export must not reach mkdir');
+  assert.deepEqual(h.pngFiles(), originals);
+  assert.equal(h.api.state().session.messages.length, 0);
+
+  const next = await prepareBoardInput(h);
+  await submitBoard(h, next);
+  const messages = h.api.state().session.messages;
+  assert.equal(messages.length, 1);
+  assert.equal(boardFiles(h).length, 1);
+  assert.ok(messages[0].shots.some((shot) => shot.path === boardFiles(h)[0]));
+  assert.ok(originals.every((file) => h.files.has(file)));
+});
+
+test('board attachment canceled during mkdir never starts a file write', async (t) => {
+  const h = await setup(t, { hold: 'board-mkdir' });
+  const turnId = await prepareBoardInput(h);
+  const originals = h.pngFiles();
+  const failed = assert.rejects(submitBoard(h, turnId), /取消|作废/);
+  await until(h.entered, 'board mkdir');
+  await h.api.action({ type: 'cancel' });
+  h.release();
+  await completed(failed);
+  assert.equal(h.writes.filter((file) => file.endsWith('-board.png')).length, 0);
+  assert.deepEqual(h.pngFiles(), originals);
+  assert.equal(h.api.state().session.messages.length, 0);
+});
+
+for (const invalidation of ['cancel', 'end', 'clear']) {
+  test(`board attachment ${invalidation} during write removes only the uncommitted attachment`, async (t) => {
+    const h = await setup(t, { hold: 'board' });
+    const turnId = await prepareBoardInput(h);
+    const originals = h.pngFiles();
+    const failed = assert.rejects(submitBoard(h, turnId), /取消|作废|变更|结束/);
+    await until(h.entered, 'board write');
+    const output = boardFiles(h)[0];
+    assert.ok(output, 'write has created a partial board attachment');
+    if (invalidation === 'end') h.api.endSession();
+    else
+      await h.api.action({
+        type: invalidation,
+        ...(invalidation === 'clear' ? { layer: 'user' } : {}),
+      });
+    h.release();
+    await completed(failed);
+    assert.deepEqual(h.pngFiles(), originals);
+    assert.deepEqual(h.removals, [output]);
+    assert.equal(h.api.state().session.messages.length, 0);
+  });
+}
+
+test('board attachment partial write failure preserves earlier committed attachments and source frames', async (t) => {
+  const options = { writeErrorPhase: 'board' };
+  const h = await setup(t, options);
+  await submitBoard(h, await prepareBoardInput(h));
+  const committed = boardFiles(h)[0];
+  assert.ok(committed);
+  const turnId = await prepareBoardInput(h);
+  const retained = h.pngFiles();
+  const writeError = Object.assign(new Error('private board write failure'), { code: 'ENOSPC' });
+  options.writeError = writeError;
+  await assert.rejects(submitBoard(h, turnId), (error) => error === writeError);
+  assert.deepEqual(h.pngFiles(), retained);
+  assert.equal(h.removals.length, 1);
+  assert.notEqual(h.removals[0], committed);
+  assert.ok(h.removals[0].endsWith('-board.png'));
+  assert.equal(h.api.state().session.messages.length, 1);
+  assert.equal(h.api.snapshot().input.phase, 'editing', 'failed submission remains retryable');
+  options.writeError = undefined;
+  await submitBoard(h, turnId);
+  assert.equal(h.api.state().session.messages.length, 2);
+  assert.equal(boardFiles(h).length, 2);
+  assert.ok(retained.every((file) => h.files.has(file)));
+  assert.equal(h.api.snapshot().input.phase, 'idle');
+});
+
+test('board attachment cleanup failure retains the write error and reports safe metadata', async (t) => {
+  const writeError = Object.assign(new Error('PRIVATE_BOARD_WRITE_CONTENT'), { code: 'ENOSPC' });
+  const cleanupError = Object.assign(new Error('PRIVATE_BOARD_CLEANUP_PATH'), { code: 'EPERM' });
+  const h = await setup(t, { writeError, writeErrorPhase: 'board', cleanupError });
+  const turnId = await prepareBoardInput(h);
+  const originals = h.pngFiles();
+  await assert.rejects(submitBoard(h, turnId), (error) => error === writeError);
+  assert.equal(h.removals.length, 1);
+  assert.ok(h.removals[0].endsWith('-board.png'));
+  assert.ok(originals.every((file) => h.files.has(file)));
+  assert.equal(h.api.state().session.messages.length, 0);
+  const failures = h.events.filter((event) => event.event === 'board-attachment-cleanup-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].code, 'EPERM');
+  assert.doesNotMatch(JSON.stringify(failures), /PRIVATE_|fixture-home|sessions|board\.png/);
+});
 
 test('wait disconnected while completing its body releases the route and permits delivery on reconnect', async (t) => {
   const h = await setup(t, { hold: 'wait-body' });
