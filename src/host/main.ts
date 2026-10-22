@@ -1083,14 +1083,11 @@ async function startServer() {
         const active = checkDriver(req);
         switch (route) {
           case '/wait': {
+            requireConnected();
             runtimeEvent('wait-start');
-            const controller = new AbortController();
-            res.on('close', () => {
-              if (!res.writableEnded) controller.abort();
-            });
             const messages = await active.wait(
               z.number().min(1).max(480000).default(480000).parse(data.timeoutMs),
-              controller.signal,
+              requestAbort.signal,
             );
             runtimeEvent('wait-complete', { messages: messages.length });
             result = {

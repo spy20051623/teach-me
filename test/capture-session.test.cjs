@@ -240,6 +240,8 @@ async function setup(t, options = {}) {
       headers: { 'x-companion-token': endpoint.token, 'x-session-token': token },
       async *[Symbol.asyncIterator]() {
         yield Buffer.from(JSON.stringify(data));
+        // Hold after the full payload arrives, before body() can resume route handling.
+        if (route === 'wait') await hold('wait-body');
       },
     };
     const res = Object.assign(new EventEmitter(), {
@@ -306,6 +308,82 @@ function noPublishedShots(h) {
   assert.equal(state.captureProtected, false, 'capture visibility protection is released');
   assert.equal(h.pngFiles().length, 0, 'invalidated temporary screenshot files are removed');
 }
+
+test('wait disconnected while completing its body releases the route and permits delivery on reconnect', async (t) => {
+  const h = await setup(t, { hold: 'wait-body' });
+  const session = h.api.state().session;
+  t.after(() => session.end());
+  const old = h.request('wait', { timeoutMs: 480000 });
+  await until(h.entered, 'complete wait body before route continuation');
+  old.disconnect();
+  h.release();
+  await completed(old.done);
+  assert.equal(session.phase, 'ready', 'disconnected request must not enter waiting state');
+
+  const next = h.request('wait', { timeoutMs: 480000 });
+  await until(() => session.phase === 'waiting', 'reconnected consumer');
+  const message = session.push('message after reconnect', [], 'wait-reconnect');
+  const response = await completed(next.result);
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    response.body.messages.map((item) => item.id),
+    [message.id],
+  );
+  assert.equal((await h.request('ack', { id: message.id }).result).status, 200);
+  assert.equal(session.pending.length, 0);
+});
+
+test('wait disconnected while completing its body cannot mark queued messages delivered', async (t) => {
+  const h = await setup(t, { hold: 'wait-body' });
+  const session = h.api.state().session;
+  t.after(() => session.end());
+  const message = session.push('still needs delivery', [], 'wait-pending');
+  const old = h.request('wait', { timeoutMs: 480000 });
+  await until(h.entered, 'complete wait body before route continuation');
+  old.disconnect();
+  h.release();
+  await completed(old.done);
+  const premature = await h.request('ack', { id: message.id }).result;
+  assert.equal(premature.status, 400);
+  assert.match(premature.body.error, /不能确认尚未交付的消息/);
+  assert.equal(session.pending.length, 1);
+
+  const response = await completed(h.request('wait', { timeoutMs: 480000 }).result);
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    response.body.messages.map((item) => item.id),
+    [message.id],
+  );
+  assert.equal((await h.request('ack', { id: message.id }).result).status, 200);
+  assert.equal(session.pending.length, 0);
+});
+
+test('registered wait disconnect releases only its own consumer and preserves single-consumer delivery', async (t) => {
+  const h = await setup(t);
+  const session = h.api.state().session;
+  t.after(() => session.end());
+  const old = h.request('wait', { timeoutMs: 480000 });
+  await until(() => session.phase === 'waiting', 'initial registered consumer');
+  old.disconnect();
+  await completed(old.done);
+  assert.equal(session.phase, 'ready');
+
+  const next = h.request('wait', { timeoutMs: 480000 });
+  await until(() => session.phase === 'waiting', 'replacement registered consumer');
+  old.disconnect();
+  const duplicate = await completed(h.request('wait', { timeoutMs: 480000 }).result);
+  assert.equal(duplicate.status, 400);
+  assert.match(duplicate.body.error, /已有 wait 正在等待/);
+  const message = session.push('only the current consumer receives this', [], 'wait-current');
+  const response = await completed(next.result);
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    response.body.messages.map((item) => item.id),
+    [message.id],
+  );
+  assert.equal((await h.request('ack', { id: message.id }).result).status, 200);
+  assert.equal(session.pending.length, 0);
+});
 
 test('old session capture cannot retry into or disclose a replacement session', async (t) => {
   const h = await setup(t, { hold: 'sources' });

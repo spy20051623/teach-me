@@ -153,6 +153,7 @@
 | T45 HTML指引加载有界清理与隐藏状态隔离 | in_progress | T01 | [T45.md](evidence/T45.md) |
 | T46 教学屏幕断开后暂停采集直到重新选择 | in_progress | T01 | [T46.md](evidence/T46.md) |
 | T47 Windows helper启动握手隔离与一次安全恢复 | done | T33 | [T47.md](evidence/T47.md) |
+| T48 长轮询在请求解析期间断连后及时释放 | done | T01 | [T48.md](evidence/T48.md) |
 
 ## 尚未完成任务的接续说明
 
@@ -165,7 +166,7 @@
 - **T08**：按任务 verify 和验收标准核对实现及缺口。
 - **T10**：39 测试、23 项 Electron、310 秒 CLI 长等待与两轮收发、Windows 原生快捷键/真实排除取图/键盘 Enter/回复渲染和草稿清除通过；第三方远控持续画面及独立外部软件焦点恢复未验证，保留 in_progress。
 - **T12**：修复与 Paint 三轮真实快捷键/取消/发送通过；完整 Win+R 启动入口因电脑工具限制未验证，保留 pending。
-- **T14**：历史45分钟隔离观察未复现静置退出。10月22日晚间再次遇到helper10秒未READY退出1，新profile随后约1.2秒READY、实际教学约9分钟stop退出0；阶段探针不能反推首次超时根因。优先补进入脚本/Add-Type阶段元数据，历史静置退出仍未知。
+- **T14**：历史45分钟隔离观察未复现静置退出。10月22日晚间再次遇到helper10秒未READY退出1，新profile随后约1.2秒READY、实际教学约9分钟stop退出0；阶段探针不能反推首次超时根因。T47已补ENTER/READY阶段元数据及安全恢复，历史自然延迟与静置退出仍未知。
 - **T15**：基础工具、附件与分层集成通过；真实鼠标矩形及布局已观察，原生键盘焦点等完整验收继续记录。
 - **T16**：360 DIP mini 与真实 Windows 标题拖动已观察；多屏不同缩放实际拖动仍 pending。
 - **T17**：T33后最新构建完整重跑原生Microsoft拼音、回复不重排、中文多行、候选Enter不误发和再次Enter发送；wait收到两条消息、ack及正常stop通过。其他IME、麦克风、多屏及完整切换矩阵pending。
@@ -183,4 +184,4 @@
 更新规格/ADR、tasks.json、证据和当前接续 → `npm run context` → 审阅差异 → `npm run check` → 一起提交。
 具体命令和验证边界见 MEMORY.md、README.md 与各任务 verify；不将运行数据写入项目记忆。
 
-<!-- source-sha256: dd77a38c22e3c0605e4561f5de1d81e0cd88029571ea78a530c5796bb6bab37f -->
+<!-- source-sha256: fea8c8663b3c1532a430b9cb2ef1af8464a357657e83b6e864af9a0bad1d7b66 -->

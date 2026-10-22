@@ -352,7 +352,7 @@
       "evidence": [
         "docs/rebuild/evidence/T14.md"
       ],
-      "notes": "历史45分钟隔离观察未复现静置退出。10月22日晚间再次遇到helper10秒未READY退出1，新profile随后约1.2秒READY、实际教学约9分钟stop退出0；阶段探针不能反推首次超时根因。优先补进入脚本/Add-Type阶段元数据，历史静置退出仍未知。"
+      "notes": "历史45分钟隔离观察未复现静置退出。10月22日晚间再次遇到helper10秒未READY退出1，新profile随后约1.2秒READY、实际教学约9分钟stop退出0；阶段探针不能反推首次超时根因。T47已补ENTER/READY阶段元数据及安全恢复，历史自然延迟与静置退出仍未知。"
     },
     {
       "id": "T15",
@@ -1103,6 +1103,31 @@
         "docs/rebuild/evidence/T47.md"
       ],
       "notes": "READY前零业务写、独立启动期限、确认退出后共享一次恢复及未退出门禁已实现；helper29项/CLI3项与最终183项check通过，独立审查缺口已修。Windows仅一次生产启动故障注入14.5秒恢复后立即正常stop，19:21无进程残留；自然延迟根因仍未知，T14保留。"
+    },
+    {
+      "id": "T48",
+      "title": "长轮询在请求解析期间断连后及时释放",
+      "milestone": "M3",
+      "status": "done",
+      "dependsOn": [
+        "T01"
+      ],
+      "requirements": [
+        "R05",
+        "R15"
+      ],
+      "acceptance": [
+        "A06",
+        "A15"
+      ],
+      "verify": [
+        "纯Node完整HTTP处理函数断连时序失败对照及重连/ack回归",
+        "独立审查与npm run check"
+      ],
+      "evidence": [
+        "docs/rebuild/evidence/T48.md"
+      ],
+      "notes": "已用完整host纯Node受控时序复现：路由前断连仍占480秒wait或推进交付水位。复用外层取消信号并复核连接，HEAD对照3项中2失败、修后3项/host39项及186项check通过，独立审查无阻断。实际网络时序频率与Agent/桌面验收不在本项范围。"
     }
   ],
   "nextUp": [
