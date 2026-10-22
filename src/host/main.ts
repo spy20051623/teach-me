@@ -340,17 +340,48 @@ function applyCaptureVisibility() {
 
 let captureProtected = false;
 let captureTail: Promise<unknown> = Promise.resolve();
-async function captureScreen(): Promise<Shot> {
-  const capturingSession = requireSession();
+let captureDisplayEpoch = 0;
+function captureScope(active = requireSession(), connected = () => {}) {
+  const current = target();
+  const display = { ...current, bounds: { ...current.bounds }, size: { ...current.size } };
+  const epoch = captureDisplayEpoch;
+  const recovery = panelRecoveryAt;
+  const assertCurrent = () => {
+    connected();
+    if (
+      quitting ||
+      panelRecovering ||
+      recovery !== panelRecoveryAt ||
+      session !== active ||
+      active.phase === 'ended'
+    )
+      throw new Error('教学已变更，截图已作废');
+    const now = target();
+    if (
+      epoch !== captureDisplayEpoch ||
+      display.id !== now.id ||
+      display.scaleFactor !== now.scaleFactor ||
+      JSON.stringify(display.bounds) !== JSON.stringify(now.bounds)
+    )
+      throw new Error('教学屏幕已变更，请重新请求截图');
+  };
+  assertCurrent();
+  return { active, display, assertCurrent };
+}
+async function captureScreen(scope = captureScope()): Promise<Shot> {
+  scope.assertCurrent();
+  const capturingSession = scope.active;
   const task = captureTail
     .catch(() => {})
     .then(async () => {
-      const d = target();
+      scope.assertCurrent();
+      const d = scope.display;
       captureProtected = true;
       applyCaptureVisibility();
       let sources;
       try {
         await wait(35);
+        scope.assertCurrent();
         sources = await desktopCapturer.getSources({
           types: ['screen'],
           thumbnailSize: {
@@ -362,6 +393,7 @@ async function captureScreen(): Promise<Shot> {
         captureProtected = false;
         applyCaptureVisibility();
       }
+      scope.assertCurrent();
       const source = sources.find((s) => s.display_id === String(d.id));
       if (!source || source.thumbnail.isEmpty()) throw new Error('该屏幕无法截取，请更换屏幕');
       const raw = source.thumbnail;
@@ -375,15 +407,27 @@ async function captureScreen(): Promise<Shot> {
             })
           : raw;
       const size = image.getSize();
-      if (session !== capturingSession || capturingSession.phase === 'ended')
-        throw new Error('教学已变更，截图已作废');
       const id = `s${++shotSequence}`;
       const dir = path.join(home, 'sessions', capturingSession.id, 'shots');
-      await fs.mkdir(dir, { recursive: true });
       const file = path.join(dir, `${id}.png`);
-      await fs.writeFile(file, image.toPNG());
       const originalFile = path.join(dir, `${id}-original.png`);
-      await fs.writeFile(originalFile, raw.toPNG());
+      try {
+        await fs.mkdir(dir, { recursive: true });
+        scope.assertCurrent();
+        await fs.writeFile(file, image.toPNG());
+        scope.assertCurrent();
+        await fs.writeFile(originalFile, raw.toPNG());
+        scope.assertCurrent();
+      } catch (e) {
+        for (const stale of [file, originalFile]) {
+          try {
+            await fs.rm(stale, { force: true });
+          } catch (cleanupError) {
+            runtimeEvent('capture-cleanup-failed', failureMetadata(cleanupError));
+          }
+        }
+        throw e;
+      }
       originals.set(id, originalFile);
       const shot: Shot = {
         id,
@@ -546,21 +590,31 @@ function settleCapture(allow: boolean) {
   broadcast();
   autoCollapse();
 }
-async function approveCapture() {
+async function approveCapture(signal: AbortSignal) {
+  if (signal.aborted) return false;
   if (settings.captureTier === 'always') return true;
   if (captureRequest) throw new Error('已有截屏请求');
   const phase = settings.captureTier === 'lesson' ? 'countdown' : 'pending';
   captureState = { phase, remaining: phase === 'countdown' ? 3 : 0 };
   expand();
   return new Promise<boolean>((resolve) => {
-    captureRequest = {
-      resolve,
+    const abort = () => {
+      if (captureRequest === request) settleCapture(false);
+    };
+    const request = {
+      resolve: (allow: boolean) => {
+        signal.removeEventListener('abort', abort);
+        resolve(allow);
+      },
       timer: setTimeout(
         () => settleCapture(phase === 'countdown'),
         phase === 'countdown' ? 3000 : 60000,
       ),
     };
-    broadcast();
+    captureRequest = request;
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    else broadcast();
   });
 }
 async function consent(kind: 'start' | 'attach', topic: string, signal: AbortSignal) {
@@ -799,6 +853,7 @@ async function action(a: Action) {
       await input.cancel();
       if (quitting || panelRecovering || displayRequest !== requested) return snapshot();
       displayId = a.id;
+      captureDisplayEpoch++;
       guides = [];
       clearUserBoard();
       lastShot = null;
@@ -1032,17 +1087,21 @@ async function startServer() {
             result = { ok: true };
             break;
           case '/capture': {
-            if (!(await approveCapture())) throw new Error('截屏未获允许');
+            const scope = captureScope(active, requireConnected);
+            if (!(await approveCapture(requestAbort.signal))) throw new Error('截屏未获允许');
+            scope.assertCurrent();
             let shot: Shot | null = null;
             for (let n = 0; n < 3; n++) {
               try {
-                shot = await captureScreen();
+                shot = await captureScreen(scope);
                 break;
               } catch (e) {
+                scope.assertCurrent();
                 if (n === 2) throw e;
                 await wait(200);
               }
             }
+            scope.assertCurrent();
             lastShot = shot;
             result = { shot };
             break;
@@ -1467,6 +1526,7 @@ app
         fail(new Error(`快捷键 ${key} 被占用`));
     }
     screen.on('display-removed', () => {
+      captureDisplayEpoch++;
       if (displayId && !screen.getAllDisplays().some((d) => d.id === displayId)) {
         displayId = null;
         guides = [];
@@ -1479,6 +1539,7 @@ app
       broadcast();
     });
     screen.on('display-metrics-changed', () => {
+      captureDisplayEpoch++;
       guides = [];
       clearUserBoard();
       lastShot = null;
