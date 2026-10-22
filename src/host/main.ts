@@ -144,12 +144,45 @@ let displayRequest: {
   timer: ReturnType<typeof setTimeout>;
 } | null = null;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const target = () =>
-  screen.getAllDisplays().find((d) => d.id === displayId) || screen.getPrimaryDisplay();
+const teachingDisplay = () => screen.getAllDisplays().find((d) => d.id === displayId);
+// Window placement may fall back; capture and guides require an explicitly selected display.
+const target = () => teachingDisplay() || screen.getPrimaryDisplay();
+function requireTeachingDisplay() {
+  const display = teachingDisplay();
+  if (!display) throw new Error('教学屏幕已断开或尚未选择，请重新选屏');
+  return display;
+}
 const panelDisplay = () =>
   screen.getAllDisplays().find((d) => d.id === panelPosition?.displayId) || target();
 
+function observeDisplays() {
+  screen.on('display-removed', () => {
+    captureDisplayEpoch++;
+    if (displayId !== null && !teachingDisplay()) {
+      displayId = null;
+      guides = [];
+      clearUserBoard();
+      lastShot = null;
+      settleCapture(false);
+      voice.cancel().catch(fail);
+      fail(new Error('教学屏幕断开，请重新选屏'));
+    }
+    place();
+    broadcast();
+  });
+  screen.on('display-metrics-changed', () => {
+    captureDisplayEpoch++;
+    guides = [];
+    clearUserBoard();
+    lastShot = null;
+    place();
+    broadcast();
+  });
+}
+
 function snapshot(): Snapshot {
+  const active = session && session.phase !== 'ended';
+  const selected = teachingDisplay();
   const zoom = panel && !panel.isDestroyed() ? panel.webContents.getZoomFactor() : 1;
   const transition = panelMotion?.transition;
   const cssBounds = (b: { x: number; y: number; width: number; height: number }) => ({
@@ -171,7 +204,7 @@ function snapshot(): Snapshot {
           to: cssBounds(transition.to),
         }
       : null,
-    selectingDisplay: !!displayRequest,
+    selectingDisplay: !!displayRequest || !!(active && !selected),
     voice: voice.state,
     revision,
     session: session ? { id: session.id, topic: session.topic, phase: session.phase } : null,
@@ -196,7 +229,7 @@ function snapshot(): Snapshot {
       height: d.size.height,
       scaleFactor: d.scaleFactor,
     })),
-    displayId: target().id,
+    displayId: active ? (selected?.id ?? null) : target().id,
     error,
   };
 }
@@ -357,13 +390,13 @@ function imageSessionScope(active: Session, connected = () => {}) {
   };
 }
 function captureScope(active = requireSession(), connected = () => {}) {
-  const current = target();
+  const current = requireTeachingDisplay();
   const display = { ...current, bounds: { ...current.bounds }, size: { ...current.size } };
   const epoch = captureDisplayEpoch;
   const assertSession = imageSessionScope(active, connected);
   const assertCurrent = () => {
     assertSession();
-    const now = target();
+    const now = requireTeachingDisplay();
     if (
       epoch !== captureDisplayEpoch ||
       display.id !== now.id ||
@@ -859,7 +892,9 @@ async function action(a: Action) {
       if (quitting || panelRecovering || displayRequest !== requested) return snapshot();
       await input.cancel();
       if (quitting || panelRecovering || displayRequest !== requested) return snapshot();
+      if (!screen.getAllDisplays().some((d) => d.id === a.id)) throw new Error('屏幕已断开');
       displayId = a.id;
+      error = null;
       captureDisplayEpoch++;
       guides = [];
       clearUserBoard();
@@ -955,9 +990,10 @@ async function startServer() {
         throw new Error('面板正在恢复，请稍后重试');
       let result: unknown;
       if (route === '/status') {
+        const state = snapshot();
         result = {
-          session: snapshot().session,
-          displayId: target().id,
+          session: state.session,
+          displayId: state.displayId,
           shots: [...shots.values()].slice(-10),
           home,
           version: '0.2.0',
@@ -1006,12 +1042,15 @@ async function startServer() {
                 else broadcast();
               });
               if (!selected) throw new Error('尚未选择教学屏幕');
+            } else {
+              displayId = screen.getPrimaryDisplay().id;
             }
             if (quitting) throw new Error('应用正在退出');
             requireConnected();
             await input.cancel();
             requireConnected();
             if (quitting) throw new Error('应用正在退出');
+            requireTeachingDisplay();
             launchSecret = '';
             const hadSession = session !== null;
             session = new Session(topic, broadcast);
@@ -1072,23 +1111,24 @@ async function startServer() {
             break;
           case '/show': {
             const scene = parseScene(data);
+            const display = requireTeachingDisplay();
             const shot = shots.get(scene.shot || lastShot?.id || '');
             if (!shot) throw new Error('先 capture 或接收用户截图后再画');
-            if (shot.scaleFactor !== target().scaleFactor)
+            if (shot.scaleFactor !== display.scaleFactor)
               throw new Error('屏幕缩放已变，请重新 capture');
-            const nextGuides = mapGuides(scene, shot, { ...target().bounds }, target().id);
+            const nextGuides = mapGuides(scene, shot, { ...display.bounds }, display.id);
             const html = nextGuides.filter(
               (g): g is Extract<Guide, { type: 'html' }> => g.type === 'html',
             );
             if (html.length > 1) throw new Error('每个场景最多一段 HTML');
             if (html[0]) {
-              validateHtmlArea(html[0].rect, target().bounds);
+              validateHtmlArea(html[0].rect, display.bounds);
               validateHtmlSource(html[0].html);
             }
             guides = nextGuides;
             htmlHost.clear();
             htmlHost.visible(!guidesHidden);
-            if (html[0]) await htmlHost.show(html[0], target());
+            if (html[0]) await htmlHost.show(html[0], display);
             active.say(scene.say);
             expand('reply');
             result = { drawn: guides.length };
@@ -1554,27 +1594,7 @@ app
       )
         fail(new Error(`快捷键 ${key} 被占用`));
     }
-    screen.on('display-removed', () => {
-      captureDisplayEpoch++;
-      if (displayId && !screen.getAllDisplays().some((d) => d.id === displayId)) {
-        displayId = null;
-        guides = [];
-        clearUserBoard();
-        lastShot = null;
-        input.cancel().catch(fail);
-        fail(new Error('教学屏幕断开，请重新选屏'));
-      }
-      place();
-      broadcast();
-    });
-    screen.on('display-metrics-changed', () => {
-      captureDisplayEpoch++;
-      guides = [];
-      clearUserBoard();
-      lastShot = null;
-      place();
-      broadcast();
-    });
+    observeDisplays();
     panel.on('close', (e) => {
       if (!readyToQuit) {
         e.preventDefault();

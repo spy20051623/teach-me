@@ -145,6 +145,9 @@ export function SettingsView({
               value={state.displayId ?? ''}
               onChange={(e) => run({ type: 'select-display', id: Number(e.target.value) })}
             >
+              <option value="" disabled>
+                请选择教学屏幕
+              </option>
               {state.displays.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.label} · {d.width}×{d.height} · {Math.round(d.scaleFactor * 100)}%

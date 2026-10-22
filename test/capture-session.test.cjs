@@ -19,15 +19,18 @@ let captureTestHtmlClears = 0;
 const captureTestClearHtml = htmlHost.clear.bind(htmlHost);
 htmlHost.clear = () => { captureTestHtmlClears++; captureTestClearHtml(); };
 export const captureTest = {
-  startServer, captureScreen, action,
-  initialize(window: any) {
+  startServer, captureScreen, action, snapshot,
+  initialize(window: any, inputPolicy: () => Promise<void>) {
     panel = overlay = settingsWindow = window;
     settings = { ...defaults, captureTier: 'always', autoCollapseSec: 0 };
-    windows.inputPolicy = async () => {};
+    windows.inputPolicy = inputPolicy;
     windows.activate = async () => false;
+    windows.foreground = async () => null;
+    observeDisplays();
   },
   endSession() { session?.end(); },
   captureTier(value: Settings['captureTier']) { settings = { ...settings, captureTier: value }; },
+  voiceEngine(value: Settings['voice']['engine']) { settings = { ...settings, voice: { ...settings.voice, engine: value } }; },
   state() { return { session, shots: [...shots.values()], originals: [...originals.values()], lastShot, captureState, connection, captureProtected, guides, htmlClears: captureTestHtmlClears }; }
 };`;
 const compiled = buildSync({
@@ -81,7 +84,7 @@ async function setup(t, options = {}) {
       await gate.promise;
     }
   };
-  const displays = [1, 2].map((id) => ({
+  const displays = (options.singleDisplay ? [1] : [1, 2]).map((id) => ({
     id,
     label: `Synthetic ${id}`,
     scaleFactor: 1,
@@ -119,6 +122,10 @@ async function setup(t, options = {}) {
     getNativeWindowHandle: () => Buffer.alloc(8),
     webContents: { getZoomFactor: () => 1 },
   };
+  const screen = Object.assign(new EventEmitter(), {
+    getAllDisplays: () => displays,
+    getPrimaryDisplay: () => displays[0],
+  });
   const electron = {
     app: fakeApp,
     nativeImage: {
@@ -135,7 +142,7 @@ async function setup(t, options = {}) {
       }
     },
     nativeTheme: { shouldUseDarkColors: false },
-    screen: { getAllDisplays: () => displays, getPrimaryDisplay: () => displays[0] },
+    screen,
     desktopCapturer: {
       getSources: async () => {
         acquisitions++;
@@ -218,7 +225,7 @@ async function setup(t, options = {}) {
     clearInterval() {},
   });
   const api = module.exports.captureTest;
-  api.initialize(window);
+  api.initialize(window, () => hold('cancel'));
   t.after(() => {
     gate.resolve();
     for (const timer of timers) clearTimeout(timer);
@@ -256,8 +263,13 @@ async function setup(t, options = {}) {
       },
     };
   };
-  const initial = await request('start', { launchSecret: 'fixture-launch', displayId: 1 }).result;
-  assert.equal(initial.status, 200, 'initial real start route succeeds');
+  if (!options.noSession) {
+    const initial = await request('start', {
+      launchSecret: 'fixture-launch',
+      ...(options.implicitDisplay ? {} : { displayId: 1 }),
+    }).result;
+    assert.equal(initial.status, 200, 'initial real start route succeeds');
+  }
   const replace = async () => {
     api.endSession();
     const pending = request('start', { topic: 'replacement fixture', displayId: 1 });
@@ -270,6 +282,12 @@ async function setup(t, options = {}) {
     request,
     replace,
     displays,
+    removeDisplay(id) {
+      const index = displays.findIndex((display) => display.id === id);
+      assert.notEqual(index, -1, 'removed synthetic display exists');
+      const [display] = displays.splice(index, 1);
+      screen.emit('display-removed', {}, display);
+    },
     files,
     events,
     removals,
@@ -554,6 +572,152 @@ test('zoom cleanup failure preserves the original write error and source files',
 });
 
 const htmlItem = (rect, html = '<p>fixture</p>') => ({ type: 'html', rect, html });
+test('display removal requires explicit reselection before capture or stale primary-screen show', async (t) => {
+  const h = await setup(t);
+  const source = await captureZoomSource(h);
+  await h.api.action({ type: 'select-display', id: 2 });
+  h.removeDisplay(2);
+  const state = h.api.snapshot();
+  assert.equal(state.displayId, null);
+  assert.equal(state.selectingDisplay, true);
+  const status = await h.request('status').result;
+  assert.equal(status.status, 200);
+  assert.equal(status.body.displayId, null);
+  const before = h.acquisitions();
+  assert.equal((await h.request('capture').result).status, 400);
+  assert.equal(h.acquisitions(), before, 'missing selection must not capture the fallback primary');
+  const show = await h.request('show', {
+    shot: source.shot.id,
+    say: 'must not reuse the fallback screen',
+    items: [{ type: 'arrow', to: [150, 120] }],
+  }).result;
+  assert.equal(show.status, 400);
+  assert.equal(h.api.state().guides.length, 0);
+  await h.api.action({ type: 'select-display', id: 1 });
+  assert.equal(h.api.snapshot().displayId, 1);
+  assert.equal(h.api.snapshot().selectingDisplay, false);
+  const restored = await h.request('capture').result;
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.shot.displayId, 1);
+  assert.equal(h.acquisitions(), before + 1);
+});
+
+test('display removal of an unrelated screen preserves the selected teaching display', async (t) => {
+  const h = await setup(t);
+  await h.api.action({ type: 'select-display', id: 2 });
+  h.removeDisplay(1);
+  assert.equal(h.api.snapshot().displayId, 2);
+  assert.equal(h.api.snapshot().selectingDisplay, false);
+  const result = await h.request('capture').result;
+  assert.equal(result.status, 200);
+  assert.equal(result.body.shot.displayId, 2);
+});
+
+test('display removal after implicit single-screen start cannot silently change the teaching screen', async (t) => {
+  const h = await setup(t, { singleDisplay: true, implicitDisplay: true });
+  assert.equal(h.api.snapshot().displayId, 1);
+  h.displays.push({
+    ...h.displays[0],
+    id: 2,
+    label: 'Synthetic replacement',
+    bounds: { ...h.displays[0].bounds, x: 1000 },
+    workArea: { ...h.displays[0].workArea, x: 1000 },
+  });
+  h.removeDisplay(1);
+  assert.equal(h.api.snapshot().displayId, null);
+  assert.equal(h.api.snapshot().selectingDisplay, true);
+  assert.equal((await h.request('capture').result).status, 400);
+  assert.equal(h.acquisitions(), 0);
+});
+
+test('display status without an active session still reports the default primary screen', async (t) => {
+  const h = await setup(t, { noSession: true });
+  const result = await h.request('status').result;
+  assert.equal(result.status, 200);
+  assert.equal(result.body.displayId, 1);
+  assert.equal(h.api.snapshot().displayId, 1);
+  assert.equal(h.api.snapshot().selectingDisplay, false);
+});
+
+test('display selection cannot commit a target removed while canceling the previous input', async (t) => {
+  const options = {};
+  const h = await setup(t, options);
+  options.hold = 'cancel';
+  const pending = h.api.action({ type: 'select-display', id: 2 }).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, error }),
+  );
+  await until(h.entered);
+  h.removeDisplay(2);
+  h.release();
+  assert.equal(
+    (await pending).ok,
+    false,
+    'selection must revalidate its target after cancellation',
+  );
+  assert.equal(h.api.snapshot().displayId, 1);
+  assert.equal(h.api.snapshot().selectingDisplay, false);
+});
+
+test('display removal during approved start cleanup cannot create a session and a retry recovers', async (t) => {
+  const h = await setup(t, { noSession: true, hold: 'cancel' });
+  const pending = h.request('start', {
+    topic: 'approved start with a disappearing screen',
+    displayId: 2,
+  });
+  await until(() => !!h.api.state().connection, 'initial connection approval');
+  await h.api.action({ type: 'connection-decision', allow: true });
+  await until(h.entered, 'approved start waiting for input cancellation');
+  h.removeDisplay(2);
+  h.release();
+  const failed = await pending.result;
+  assert.equal(failed.status, 400);
+  assert.equal(failed.body.token, undefined);
+  assert.equal(failed.body.id, undefined);
+  assert.equal(h.api.state().session, null, 'invalidated start must not create an orphan session');
+
+  const next = h.request('start', { topic: 'recovered teaching', displayId: 1 });
+  await until(() => !!h.api.state().connection, 'retry connection approval');
+  await h.api.action({ type: 'connection-decision', allow: true });
+  const recovered = await next.result;
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body.token, h.api.state().session.token);
+  assert.equal(h.api.snapshot().displayId, 1);
+  assert.equal(h.api.snapshot().selectingDisplay, false);
+});
+
+test('display removal withdraws pending capture approval and blocks another capture', async (t) => {
+  const h = await setup(t);
+  await h.api.action({ type: 'select-display', id: 2 });
+  h.api.captureTier('ask');
+  const pending = h.request('capture');
+  await until(() => !!h.api.state().captureState, 'capture approval before disconnection');
+  h.removeDisplay(2);
+  await completed(pending.done);
+  assert.equal((await pending.result).status, 400);
+  assert.equal(h.api.state().captureState, null);
+  assert.equal(h.acquisitions(), 0);
+  const next = h.request('capture');
+  await completed(next.done);
+  assert.equal((await next.result).status, 400);
+  assert.equal(h.api.state().captureState, null);
+  assert.equal(h.acquisitions(), 0);
+});
+
+test('display removal cancels an active voice controller without starting a microphone', async (t) => {
+  const h = await setup(t);
+  await h.api.action({ type: 'select-display', id: 2 });
+  // The renderer is never loaded; custom recording here is controller state only.
+  h.api.voiceEngine('custom');
+  await h.api.action({ type: 'voice-start' });
+  assert.equal(h.api.snapshot().voice.phase, 'recording');
+  h.removeDisplay(2);
+  await pause(0);
+  assert.equal(h.api.snapshot().voice.phase, 'idle');
+  assert.equal(h.api.snapshot().voice.id, null);
+  assert.equal(h.api.snapshot().input.phase, 'idle');
+});
+
 for (const invalid of [
   {
     name: 'HTML containing an unpaired surrogate',
