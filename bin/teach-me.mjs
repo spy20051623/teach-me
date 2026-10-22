@@ -67,9 +67,9 @@ async function call(route, data = {}, timeout = 30000) {
     timeout,
   );
 }
-async function alive() {
+async function alive(timeout = 30000) {
   try {
-    await call('status');
+    await call('status', {}, timeout);
     return true;
   } catch {
     return false;
@@ -155,12 +155,21 @@ path with your Agent's image tool.`,
       });
       child.on('error', () => {});
       child.unref();
-      for (let n = 0; n < 100; n++) {
-        await pause(150);
+      // Allow two 10s native startup attempts, confirmed retirement (up to 2s),
+      // then the first 10s window operation and Electron initialization overhead.
+      const launchDeadline = Date.now() + 45000;
+      let available = false;
+      while (Date.now() < launchDeadline) {
+        await pause(Math.min(150, launchDeadline - Date.now()));
         endpoint = await read(endpointFile);
-        if (await alive()) break;
+        const remaining = launchDeadline - Date.now();
+        if (remaining <= 0) break;
+        if (await alive(Math.min(1000, remaining))) {
+          available = true;
+          break;
+        }
       }
-      if (!(await alive())) throw new Error('Electron 未能启动，请运行 npm run app 查看错误。');
+      if (!available) throw new Error('Electron 未能启动，请运行 npm run app 查看错误。');
     }
     driver = await call(
       'start',

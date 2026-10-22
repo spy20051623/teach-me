@@ -13,9 +13,9 @@
 
 ### 1. T14 · 定位 npm 启动后退出并补全退出诊断
 
-状态：`in_progress`。优先理由：晚间实机首轮再次出现helper未READY导致启动失败，直接影响基本可用性，优先于补验已正常恢复的路径。
+状态：`in_progress`。优先理由：原始静置退出及自然冷启动延迟根因仍未确认；T47已完成安全启动恢复，不能将其当作外部原因已定位。
 
-下一步：先读WINDOWS-20261022与T14证据；记录PowerShell进入脚本和Add-Type结束的固定阶段/耗时，区分初始化与编译等待，不凭一次成功或阶段探针盲目延长期限；原始静置退出单独追踪。
+下一步：先读T47与WINDOWS-20261022；19:21已下机。本轮不再实机，后续获准时仅在新失败/新条件下依ENTER/READY耗时区分脚本进入与编译等待；不要重做已通过的注入恢复实验或静默延长期限。
 
 验收入口：A19；证据：[T14.md](evidence/T14.md)
 
@@ -152,6 +152,7 @@
 | T44 拒绝无效HTML场景时保留已有指引 | done | T01 | [T44.md](evidence/T44.md) |
 | T45 HTML指引加载有界清理与隐藏状态隔离 | in_progress | T01 | [T45.md](evidence/T45.md) |
 | T46 教学屏幕断开后暂停采集直到重新选择 | in_progress | T01 | [T46.md](evidence/T46.md) |
+| T47 Windows helper启动握手隔离与一次安全恢复 | done | T33 | [T47.md](evidence/T47.md) |
 
 ## 尚未完成任务的接续说明
 
@@ -182,4 +183,4 @@
 更新规格/ADR、tasks.json、证据和当前接续 → `npm run context` → 审阅差异 → `npm run check` → 一起提交。
 具体命令和验证边界见 MEMORY.md、README.md 与各任务 verify；不将运行数据写入项目记忆。
 
-<!-- source-sha256: f8cca308c1e5f946f859e18fc90bb878439dcbca2486041c26fc91c7b3de8275 -->
+<!-- source-sha256: dd77a38c22e3c0605e4561f5de1d81e0cd88029571ea78a530c5796bb6bab37f -->
