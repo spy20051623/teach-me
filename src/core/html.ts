@@ -1,7 +1,12 @@
 export const htmlPolicy =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'";
-export function htmlDocument(html: string) {
+export function validateHtmlSource(html: string) {
   if (Buffer.byteLength(html, 'utf8') > 256 * 1024) throw new Error('HTML 超过 256KB');
+  // In Unicode mode this matches lone surrogates, not valid pairs such as emoji.
+  if (/[\uD800-\uDFFF]/u.test(html)) throw new Error('HTML 含无效 Unicode 字符');
+}
+export function htmlDocument(html: string) {
+  validateHtmlSource(html);
   const inner = `<!doctype html><meta http-equiv="Content-Security-Policy" content="${htmlPolicy}"><style>html,body{margin:0;color:#e9ebf0;background:transparent;font:14px/1.5 'Segoe UI',sans-serif}*{box-sizing:border-box}</style>${html}`;
   const escape = (s: string) =>
     s

@@ -21,6 +21,7 @@ import type { Action, Guide, Settings, Shot, Snapshot } from '../shared/protocol
 import { Session } from '../core/session.ts';
 import { InputController } from '../core/input.ts';
 import { mapGuides, parseScene } from '../core/scene.ts';
+import { validateHtmlArea, validateHtmlSource } from '../core/html.ts';
 import { WindowsAdapter } from './windows.ts';
 import { HtmlHost } from './html.ts';
 import { zoomFiles, zoomShot } from './zoom.ts';
@@ -1075,11 +1076,16 @@ async function startServer() {
             if (!shot) throw new Error('先 capture 或接收用户截图后再画');
             if (shot.scaleFactor !== target().scaleFactor)
               throw new Error('屏幕缩放已变，请重新 capture');
-            guides = mapGuides(scene, shot, { ...target().bounds }, target().id);
-            const html = guides.filter(
+            const nextGuides = mapGuides(scene, shot, { ...target().bounds }, target().id);
+            const html = nextGuides.filter(
               (g): g is Extract<Guide, { type: 'html' }> => g.type === 'html',
             );
             if (html.length > 1) throw new Error('每个场景最多一段 HTML');
+            if (html[0]) {
+              validateHtmlArea(html[0].rect, target().bounds);
+              validateHtmlSource(html[0].html);
+            }
+            guides = nextGuides;
             htmlHost.clear();
             if (html[0]) await htmlHost.show(html[0], target());
             active.say(scene.say);

@@ -133,6 +133,7 @@
 | T41 隔离helper短查询超时与窗口操作期限 | in_progress | T33 | [T41.md](evidence/T41.md) |
 | T42 隔离截图请求的会话与屏幕生命周期 | in_progress | T01 | [T42.md](evidence/T42.md) |
 | T43 裁剪截图的会话隔离与失败文件清理 | in_progress | T01 | [T43.md](evidence/T43.md) |
+| T44 拒绝无效HTML场景时保留已有指引 | done | T01 | [T44.md](evidence/T44.md) |
 
 ## 尚未完成任务的接续说明
 
@@ -161,4 +162,4 @@
 更新规格/ADR、tasks.json、证据和当前接续 → `npm run context` → 审阅差异 → `npm run check` → 一起提交。
 具体命令和验证边界见 MEMORY.md、README.md 与各任务 verify；不将运行数据写入项目记忆。
 
-<!-- source-sha256: b2cc9a75c97204fce175006e72aade82c94d9b12173bf9187f31f007cf579e02 -->
+<!-- source-sha256: 29d21be2a85033d23d6f8e9459784a63335dc3424fccbe51cc3fea0b7ea2f2c8 -->

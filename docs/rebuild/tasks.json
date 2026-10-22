@@ -1043,6 +1043,18 @@
       "verify": ["纯Node完整host中zoom跨会话/断连/部分写入失败回归", "独立审查与npm run check", "获准实机后检查历史帧裁剪与结束恢复"],
       "evidence": ["docs/rebuild/evidence/T43.md"],
       "notes": "已修复zoom跨会话/断连后登记及部分文件遗留；8项新增回归旧版7失败、新版全通过，连同capture共23项通过；历史帧裁剪保留。Windows实际解码/文件锁与恢复pending。"
+    },
+    {
+      "id": "T44",
+      "title": "拒绝无效HTML场景时保留已有指引",
+      "milestone": "M2",
+      "status": "done",
+      "dependsOn": ["T01"],
+      "requirements": ["R07", "R13"],
+      "acceptance": ["A06", "A12"],
+      "verify": ["纯Node真实show处理函数失败对照与状态保留回归", "独立审查与npm run check"],
+      "evidence": ["docs/rebuild/evidence/T44.md"],
+      "notes": "已修复无效HTML参数在拒绝前覆盖旧场景，补独立审查发现的孤立Unicode代理项；5项host拒绝与1项编码边界新增回归通过，含合法请求恢复。只验证协议状态，窗口运行/视觉另验。"
     }
   ],
   "nextUp": [

@@ -21,6 +21,7 @@ export class HtmlHost {
     display: { bounds: { x: number; y: number; width: number; height: number } },
   ) {
     validateHtmlArea(item.rect, display.bounds);
+    const document = htmlDocument(item.html);
     this.clear();
     const [x, y, w, h] = item.rect;
     const window = new BrowserWindow({
@@ -60,9 +61,7 @@ export class HtmlHost {
         this.changed('自定义指引进程已退出，不会自动恢复。');
       }
     });
-    await window.loadURL(
-      'data:text/html;charset=utf-8,' + encodeURIComponent(htmlDocument(item.html)),
-    );
+    await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(document));
     if (this.window !== window || window.isDestroyed()) return;
     window.showInactive();
     this.timer = setTimeout(() => {

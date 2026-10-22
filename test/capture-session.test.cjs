@@ -15,6 +15,9 @@ const source =
 // Compile the complete host, including its real controllers and HTTP routes. These exports
 // exist only in this in-memory test bundle; application startup is never allowed to run.
 const hooks = `
+let captureTestHtmlClears = 0;
+const captureTestClearHtml = htmlHost.clear.bind(htmlHost);
+htmlHost.clear = () => { captureTestHtmlClears++; captureTestClearHtml(); };
 export const captureTest = {
   startServer, captureScreen, action,
   initialize(window: any) {
@@ -25,7 +28,7 @@ export const captureTest = {
   },
   endSession() { session?.end(); },
   captureTier(value: Settings['captureTier']) { settings = { ...settings, captureTier: value }; },
-  state() { return { session, shots: [...shots.values()], originals: [...originals.values()], lastShot, captureState, connection, captureProtected }; }
+  state() { return { session, shots: [...shots.values()], originals: [...originals.values()], lastShot, captureState, connection, captureProtected, guides, htmlClears: captureTestHtmlClears }; }
 };`;
 const compiled = buildSync({
   stdin: { contents: source + hooks, resolveDir: path.join(root, 'src/host'), loader: 'ts' },
@@ -69,6 +72,7 @@ async function setup(t, options = {}) {
   let handler;
   let endpoint;
   let acquisitions = 0;
+  let windowCreations = 0;
   let entered = false;
   const gate = deferred();
   const hold = async (phase) => {
@@ -126,6 +130,7 @@ async function setup(t, options = {}) {
     },
     BrowserWindow: class {
       constructor() {
+        windowCreations++;
         throw new Error('native window creation forbidden');
       }
     },
@@ -271,6 +276,7 @@ async function setup(t, options = {}) {
     entered: () => entered,
     release: gate.resolve,
     acquisitions: () => acquisitions,
+    windowCreations: () => windowCreations,
     pngFiles: () => [...files.keys()].filter((file) => file.endsWith('.png')),
   };
 }
@@ -546,3 +552,79 @@ test('zoom cleanup failure preserves the original write error and source files',
   assert.doesNotMatch(JSON.stringify(failures), /private zoom/);
   assert.equal(h.pngFiles().length, 3, 'failed deletion is not reported as successful cleanup');
 });
+
+const htmlItem = (rect, html = '<p>fixture</p>') => ({ type: 'html', rect, html });
+for (const invalid of [
+  {
+    name: 'HTML containing an unpaired surrogate',
+    items: [htmlItem([0, 0, 200, 100], '\ud800')],
+    error: /无效 Unicode/,
+  },
+  {
+    name: 'multiple HTML items',
+    items: [htmlItem([0, 0, 200, 100]), htmlItem([200, 0, 200, 100])],
+    error: /最多一段 HTML/,
+  },
+  {
+    name: 'HTML exceeding the display coverage limit',
+    items: [htmlItem([0, 0, 900, 600])],
+    error: /最多覆盖 35%/,
+  },
+  {
+    name: 'HTML outside the display',
+    items: [htmlItem([950, 0, 200, 100])],
+    error: /位于屏内/,
+  },
+  {
+    name: 'HTML exceeding the UTF-8 byte limit',
+    items: [htmlItem([0, 0, 200, 100], '中'.repeat(90000))],
+    error: /HTML 超过 256KB/,
+  },
+]) {
+  test(`invalid show with ${invalid.name} preserves the existing scene atomically`, async (t) => {
+    const h = await setup(t);
+    const source = await captureZoomSource(h);
+    const first = await h.request('show', {
+      shot: source.shot.id,
+      say: 'original teaching message',
+      items: [{ type: 'arrow', to: [150, 120] }],
+    }).result;
+    assert.equal(first.status, 200);
+    const observed = () => ({
+      guides: JSON.stringify(h.api.state().guides),
+      messages: JSON.stringify(h.api.state().session.messages),
+      htmlClears: h.api.state().htmlClears,
+      windowCreations: h.windowCreations(),
+    });
+    const before = observed();
+    const failed = await h.request('show', {
+      shot: source.shot.id,
+      say: 'rejected teaching message',
+      items: invalid.items,
+    }).result;
+    assert.equal(failed.status, 400);
+    assert.deepEqual(
+      observed(),
+      before,
+      'invalid scene must not mutate guides, messages or windows',
+    );
+    assert.match(failed.body.error, invalid.error);
+    const recovered = await h.request('show', {
+      shot: source.shot.id,
+      say: 'next valid teaching message',
+      items: [{ type: 'arrow', to: [250, 220] }],
+    }).result;
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.api.state().guides)), [
+      { type: 'arrow', to: [250, 220] },
+    ]);
+    assert.deepEqual(
+      h.api
+        .state()
+        .session.messages.map((message) => message.text)
+        .join('|'),
+      'original teaching message|next valid teaching message',
+    );
+    assert.equal(h.windowCreations(), 0);
+  });
+}
